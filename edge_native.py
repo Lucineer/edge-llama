@@ -87,6 +87,19 @@ class EdgeModel:
             ctypes.POINTER(ctypes.c_int32),  # new_tokens
         ]
         
+        # edge_generate_stream: adds callback + user_ctx
+        STREAM_CB = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int32, ctypes.c_void_p)
+        self.lib.edge_generate_stream.restype = ctypes.POINTER(ctypes.c_char)
+        self.lib.edge_generate_stream.argtypes = [
+            ctypes.c_void_p,      # impl
+            ctypes.c_char_p,      # prompt
+            ctypes.c_int32,       # max_tokens
+            ctypes.POINTER(ctypes.c_int32),  # out_len
+            ctypes.POINTER(ctypes.c_int32),  # new_tokens
+            STREAM_CB,            # callback
+            ctypes.c_void_p,      # user_ctx (not used, kept for ABI compat)
+        ]
+        
         # edge_free_string: (char*) -> void
         self.lib.edge_free_string.restype = None
         self.lib.edge_free_string.argtypes = [ctypes.c_void_p]
@@ -131,7 +144,7 @@ class EdgeModel:
     
     def generate(self, prompt: str, max_tokens: int = 128) -> str:
         """
-        Generate text from prompt.
+        Generate text from prompt (blocking, full result).
         Returns the generated text (not including the prompt).
         """
         if not self.impl:
@@ -157,6 +170,57 @@ class EdgeModel:
             return text
         finally:
             self.lib.edge_free_string(result_ptr)
+    
+    def generate_stream(self, prompt: str, max_tokens: int = 128,
+                        callback=None) -> str:
+        """
+        Generate text with streaming callback per token piece.
+        
+        Args:
+            prompt: Input text
+            max_tokens: Maximum tokens to generate
+            callback: Function(piece: str, len: int) called for each generated piece
+            
+        Returns:
+            Full generated text (same as blocking generate)
+        """
+        if not self.impl:
+            raise RuntimeError("Model not loaded")
+        
+        # Wrap the callback in ctypes
+        STREAM_CB = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int32, ctypes.c_void_p)
+        
+        collected_pieces = []
+        
+        def _cb(piece_bytes, length, user_ctx):
+            piece = ctypes.string_at(piece_bytes, length).decode('utf-8', errors='replace')
+            collected_pieces.append(piece)
+            if callback:
+                callback(piece, length)
+        
+        c_callback = STREAM_CB(_cb)
+        
+        prompt_bytes = prompt.encode('utf-8')
+        out_len = ctypes.c_int32(0)
+        new_tokens = ctypes.c_int32(0)
+        
+        result_ptr = self.lib.edge_generate_stream(
+            self.impl,
+            prompt_bytes,
+            ctypes.c_int32(max_tokens),
+            ctypes.byref(out_len),
+            ctypes.byref(new_tokens),
+            c_callback,
+            None  # user_ctx (unused)
+        )
+        
+        # Collect and return
+        full_text = ''.join(collected_pieces)
+        
+        if result_ptr:
+            self.lib.edge_free_string(result_ptr)
+        
+        return full_text
     
     @property
     def n_layer(self) -> int:

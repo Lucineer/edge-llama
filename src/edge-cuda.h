@@ -67,6 +67,22 @@ int64_t edge_vram_total(edge_t* ctx);      // bytes
 int64_t edge_vram_free(edge_t* ctx);       // bytes
 int32_t edge_tokens_per_second(edge_t* ctx);
 
+// ── Stream Callback ──
+
+// Callback type: called for each generated piece during streaming generation.
+// piece: pointer to UTF-8 text piece (may be partial token!)
+// len:   byte length of this piece
+// ctx:   user-provided context pointer (passed through from edge_generate_stream)
+typedef void (*edge_stream_cb)(const char* piece, int32_t len, void* user_ctx);
+
+// Generate with streaming callback.
+// Same as edge_generate but calls cb(piece, len, user_ctx) for each generated piece.
+// Still returns the full concatenated string (caller must edge_free_string).
+char* edge_generate_stream(edge_t* ctx, const char* prompt,
+                           int32_t max_tokens, int32_t* out_len,
+                           int32_t* new_tokens,
+                           edge_stream_cb callback, void* user_ctx);
+
 // Free a string allocated by edge_generate
 void edge_free_string(char* s);
 

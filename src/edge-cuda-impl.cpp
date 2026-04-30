@@ -102,10 +102,12 @@ extern "C" float* edge_impl_forward(struct edge_impl* impl, const int32_t* token
     return nullptr;
 }
 
-extern "C" char* edge_impl_generate(struct edge_impl* impl, const char* prompt,
-                                    int32_t max_tokens, int32_t* out_len,
-                                    int32_t* new_tokens) {
-    std::lock_guard<std::mutex> lock(impl->mtx);
+// ── Shared generate loop (used by both blocking and streaming) ──
+typedef void (*edge_stream_cb)(const char* piece, int32_t len, void* user_ctx);
+
+static std::string do_generate(edge_impl* impl, const char* prompt,
+                               int32_t max_tokens, int32_t* out_n_gen,
+                               edge_stream_cb callback, void* user_ctx) {
     auto t0 = std::chrono::steady_clock::now();
     
     // Tokenize
@@ -122,14 +124,12 @@ extern "C" char* edge_impl_generate(struct edge_impl* impl, const char* prompt,
     llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
     if (llama_decode(impl->ctx, batch)) {
         fprintf(stderr, "edge: prompt decode failed\n");
-        if (out_len) *out_len = 0;
-        if (new_tokens) *new_tokens = 0;
-        return strdup("");
+        *out_n_gen = 0;
+        return "";
     }
     
     // Generate
     int n_gen = 0;
-    int n_ctx = llama_n_ctx(impl->ctx);
     
     for (int i = 0; i < max_tokens; i++) {
         // Sample
@@ -140,11 +140,15 @@ extern "C" char* edge_impl_generate(struct edge_impl* impl, const char* prompt,
             break;
         }
         
-        // Decode
+        // Decode token to printable piece
         char buf[64];
         int n = llama_token_to_piece(impl->vocab, new_token, buf, sizeof(buf), 0, false);
         if (n > 0) {
             result.append(buf, n);
+            // Call stream callback if provided
+            if (callback) {
+                callback(buf, n, user_ctx);
+            }
         }
         n_gen++;
         
@@ -161,11 +165,38 @@ extern "C" char* edge_impl_generate(struct edge_impl* impl, const char* prompt,
     impl->last_gen_time = elapsed;
     impl->last_gen_tokens = n_gen;
     
+    *out_n_gen = n_gen;
+    fprintf(stderr, "edge: %d tokens in %.2f s (%.0f t/s)\n", n_gen, elapsed, n_gen/elapsed);
+    return result;
+}
+
+extern "C" char* edge_impl_generate(struct edge_impl* impl, const char* prompt,
+                                    int32_t max_tokens, int32_t* out_len,
+                                    int32_t* new_tokens) {
+    std::lock_guard<std::mutex> lock(impl->mtx);
+    int32_t n_gen = 0;
+    std::string result = do_generate(impl, prompt, max_tokens, &n_gen, nullptr, nullptr);
     if (out_len) *out_len = (int32_t)result.size();
     if (new_tokens) *new_tokens = n_gen;
-    
-    fprintf(stderr, "edge: %d tokens in %.2f s (%.0f t/s)\n", n_gen, elapsed, n_gen/elapsed);
-    
+    if (result.empty()) return strdup("");
+    char* c_result = (char*)malloc(result.size() + 1);
+    if (c_result) {
+        memcpy(c_result, result.c_str(), result.size());
+        c_result[result.size()] = 0;
+    }
+    return c_result;
+}
+
+extern "C" char* edge_impl_generate_stream(struct edge_impl* impl, const char* prompt,
+                                           int32_t max_tokens, int32_t* out_len,
+                                           int32_t* new_tokens,
+                                           edge_stream_cb callback, void* user_ctx) {
+    std::lock_guard<std::mutex> lock(impl->mtx);
+    int32_t n_gen = 0;
+    std::string result = do_generate(impl, prompt, max_tokens, &n_gen, callback, user_ctx);
+    if (out_len) *out_len = (int32_t)result.size();
+    if (new_tokens) *new_tokens = n_gen;
+    if (result.empty()) return strdup("");
     char* c_result = (char*)malloc(result.size() + 1);
     if (c_result) {
         memcpy(c_result, result.c_str(), result.size());

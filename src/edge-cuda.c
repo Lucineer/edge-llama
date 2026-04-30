@@ -36,6 +36,7 @@ struct edge_impl* edge_impl_load(const char* path);
 void edge_impl_unload(struct edge_impl* impl);
 float* edge_impl_forward(struct edge_impl* impl, const int32_t* tokens, int32_t n);
 char* edge_impl_generate(struct edge_impl* impl, const char* prompt, int32_t max_tokens, int32_t* out_len, int32_t* new_tokens);
+char* edge_impl_generate_stream(struct edge_impl* impl, const char* prompt, int32_t max_tokens, int32_t* out_len, int32_t* new_tokens, edge_stream_cb callback, void* user_ctx);
 int32_t edge_impl_n_layer(struct edge_impl* impl);
 int32_t edge_impl_n_embd(struct edge_impl* impl);
 int32_t edge_impl_n_head(struct edge_impl* impl);
@@ -83,6 +84,13 @@ char* edge_generate(edge_t* ctx, const char* prompt,
                     int32_t max_tokens, int32_t* out_len,
                     int32_t* new_tokens) {
     return edge_impl_generate(ctx->impl, prompt, max_tokens, out_len, new_tokens);
+}
+
+char* edge_generate_stream(edge_t* ctx, const char* prompt,
+                           int32_t max_tokens, int32_t* out_len,
+                           int32_t* new_tokens,
+                           edge_stream_cb callback, void* user_ctx) {
+    return edge_impl_generate_stream(ctx->impl, prompt, max_tokens, out_len, new_tokens, callback, user_ctx);
 }
 
 int32_t edge_n_layer(edge_t* ctx) { return edge_impl_n_layer(ctx->impl); }
