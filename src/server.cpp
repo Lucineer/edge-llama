@@ -20,7 +20,7 @@ struct Server::Impl {
     bool running = false;
 };
 
-Server::Server(Qwen2Model& model)
+Server::Server(BackendInference& model)
     : model_(model)
     , impl_(std::make_unique<Impl>()) {}
 

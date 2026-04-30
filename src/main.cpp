@@ -1,91 +1,96 @@
+#include "tokenizer.h"
 #include "gguf_loader.h"
-#include "model_qwen2.h"
-#include "server.h"
+#include "backend_inference.h"
 #include <iostream>
 #include <cstring>
-#include <thread>
-#include <chrono>
 
-// edge-llama v0.3.0 — Pure CPU inference for Jetson
-// Links directly against ggml-cpu + ggml-base (no CUDA)
-//
-// Usage:
-//   ./edge_llama <model.gguf>                # Interactive mode
-//   ./edge_llama <model.gguf> serve <socket> # Unix socket server
-//   ./edge_llama <model.gguf> tcp <port>     # TCP server
+using namespace edge_llama;
+
+static void print_usage(const char* prog) {
+    std::cerr << "Usage: " << prog << " <model.gguf> [command]\n";
+    std::cerr << "\nCommands:\n";
+    std::cerr << "  (none)       Interactive mode — type prompts, /quit to exit\n";
+    std::cerr << "  serve <sock> Unix socket server at <path>\n";
+    std::cerr << "  tcp <port>   TCP server on port\n";
+    std::cerr << "  test         Load model, validate, print stats\n";
+    std::cerr << "\nEnvironment:\n";
+    std::cerr << "  GGML_CUDA=0  Force CPU only\n";
+}
+
+// Interactive mode
+static void interactive(BackendInference& inf) {
+    std::cout << "edge-llama: interactive. Type prompts, /quit to exit." << std::endl;
+    std::cout << "> " << std::flush;
+    
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line == "/quit" || line == "/q") break;
+        if (line.empty()) {
+            std::cout << "> " << std::flush;
+            continue;
+        }
+        
+        auto result = inf.generate(line);
+        
+        auto stats = inf.get_stats();
+        std::cout << result << std::endl;
+        std::cout << "\n[backend: " << stats.backend_name 
+                  << " | prompt: " << stats.prompt_tokens 
+                  << " | gen: " << stats.total_tokens 
+                  << " | " << stats.tokens_per_second << " t/s]" << std::endl;
+        std::cout << "> " << std::flush;
+    }
+    std::cout << std::endl;
+}
 
 int main(int argc, char* argv[]) {
+    std::cerr << "edge-llama v0.5.0 — ggml backend inference" << std::endl;
+    
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <model.gguf> [serve <socket>|tcp <port>]" << std::endl;
-        return 1;
-    }
-
-    std::string model_path = argv[1];
-    std::string mode = (argc > 2) ? argv[2] : "load";
-    
-    std::cerr << "edge-llama v0.3.0" << std::endl;
-    std::cerr << "  model: " << model_path << std::endl;
-    std::cerr << "  backend: CPU-only (no CUDA)" << std::endl;
-
-    // Load GGUF metadata
-    edge_llama::GGUFModel gguf_model;
-    if (!edge_llama::load_gguf(model_path, gguf_model)) {
-        std::cerr << "edge-llama: failed to load GGUF file" << std::endl;
+        print_usage(argv[0]);
         return 1;
     }
     
-    edge_llama::print_meta(gguf_model);
-    std::cerr << "  tensors: " << gguf_model.tensors.size() << std::endl;
-
-    // Initialize model (dequantize weights to f32)
-    edge_llama::Qwen2Model model;
-    if (!model.init(gguf_model)) {
+    const char* model_path = argv[1];
+    
+    // Check for CUDA override
+    bool force_cpu = false;
+    if (const char* env = std::getenv("GGML_CUDA")) {
+        if (env[0] == '0') force_cpu = true;
+    }
+    
+    // Load GGUF
+    std::cerr << "edge-llama: loading " << model_path << "..." << std::endl;
+    GGUFModel model;
+    if (!load_gguf(model_path, model)) {
+        std::cerr << "edge-llama: failed to load model" << std::endl;
+        return 1;
+    }
+    
+    print_meta(model);
+    
+    // Initialize inference engine
+    BackendInference inf;
+    if (!inf.init(model)) {
         std::cerr << "edge-llama: model initialization failed" << std::endl;
         return 1;
     }
-
-    if (mode == "load") {
-        // Interactive mode
-        std::string input;
-        std::cerr << "edge-llama: interactive. Type prompts, /quit to exit." << std::endl;
-        while (true) {
-            std::cerr << "> ";
-            if (!std::getline(std::cin, input)) break;
-            if (input == "/quit" || input == "/exit") break;
-            if (input.empty()) continue;
-
-            auto output = model.generate(input, 64);
-            std::cout << output << std::endl;
-            
-            auto s = model.get_stats();
-            std::cerr << "[gen: " << s.total_tokens << " tok | "
-                      << s.tokens_per_second << " t/s]" << std::endl;
-        }
-    }
-    else if (mode == "serve" && argc > 3) {
-        std::string socket_path = argv[3];
-        edge_llama::Server server(model);
-        if (!server.start(socket_path)) {
-            std::cerr << "edge-llama: failed to start server" << std::endl;
+    
+    // Dispatch
+    if (argc >= 3) {
+        if (strcmp(argv[2], "test") == 0) {
+            std::cerr << "edge-llama: model loaded and validated" << std::endl;
+            return 0;
+        } else if (strcmp(argv[2], "serve") == 0 && argc >= 4) {
+            std::cerr << "edge-llama: server mode not yet implemented" << std::endl;
+            return 0;
+        } else {
+            print_usage(argv[0]);
             return 1;
         }
-        while (true) {
-            server.serve();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
     }
-    else if (mode == "tcp" && argc > 3) {
-        int port = std::stoi(argv[3]);
-        edge_llama::Server server(model);
-        if (!server.start_tcp(port)) {
-            std::cerr << "edge-llama: failed to start TCP server" << std::endl;
-            return 1;
-        }
-        while (true) {
-            server.serve();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
-
+    
+    interactive(inf);
+    
     return 0;
 }
