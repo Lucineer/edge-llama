@@ -214,6 +214,8 @@ static void handle_cmd(int client_idx, const char* cmd_line) {
             "\r\n=== flato MUD ===\r\n"
             "/think <prompt>   — Generate with edge-llama\r\n"
             "/status            — System health\r\n"
+            "/gpu               — GPU status (nvidia-smi)\r\n"
+            "/cuda              — CUDA/Capability details\r\n"
             "/peers             — List mesh peers\r\n"
             "/help              — This message\r\n"
             "/quit              — Disconnect\r\n"
@@ -233,6 +235,73 @@ static void handle_cmd(int client_idx, const char* cmd_line) {
             g_server.llama_fd >= 0 ? "connected" : "disconnected",
             (long)(time(NULL) - g_server.clients[client_idx].connected_at));
         queue_output(client_idx, buf, n < (int)sizeof(buf) ? n : sizeof(buf));
+        
+    } else if (strcmp(cmd, "cuda") == 0) {
+        // Detailed CUDA status
+        Client* c = &g_server.clients[client_idx];
+        queue_output_str(client_idx, "\r\n");
+        
+        // CUDA toolkit version
+        FILE* fp = popen("nvcc --version 2>/dev/null | tail -1 || echo 'nvcc not found'", "r");
+        if (fp) {
+            char line[256];
+            while (fgets(line, sizeof(line), fp)) {
+                queue_output_str(client_idx, "CUDA:     ");
+                queue_output(client_idx, line, strlen(line));
+                queue_output_str(client_idx, "\r\n");
+            }
+            pclose(fp);
+        }
+        
+        // CUDA devices
+        fp = popen("nvidia-smi --query-gpu=index,name,compute_cap,clocks.gr,clocks.mem,pcie.link.gen.current,pcie.link.width.current --format=csv,noheader,nounits 2>/dev/null", "r");
+        if (fp) {
+            char line[256];
+            while (fgets(line, sizeof(line), fp)) {
+                queue_output_str(client_idx, "Device:   ");
+                queue_output(client_idx, line, strlen(line));
+                queue_output_str(client_idx, "\r\n");
+            }
+            pclose(fp);
+        }
+        
+        // CMA status
+        fp = popen("grep -o 'CMA:[0-9]*/[0-9]*' /proc/meminfo 2>/dev/null || cat /proc/cmdline 2>/dev/null | grep -o 'cma=[^ ]*' || echo 'N/A'", "r");
+        if (fp) {
+            char line[256];
+            while (fgets(line, sizeof(line), fp)) {
+                queue_output_str(client_idx, "CMA:      ");
+                queue_output(client_idx, line, strlen(line));
+                queue_output_str(client_idx, "\r\n");
+            }
+            pclose(fp);
+        }
+        
+        c->state = CS_IDLE;
+        queue_output_str(client_idx, "\r\n> ");
+        
+    } else if (strcmp(cmd, "gpu") == 0) {
+        // Query nvidia-smi for GPU status (reusing /status infrastructure)
+        Client* c = &g_server.clients[client_idx];
+        c->state = CS_GENERATING;
+        g_server.cmd_client_idx = client_idx;
+        queue_output_str(client_idx, "\r\n");
+        
+        // Read nvidia-smi output in child process
+        FILE* fp = popen("nvidia-smi --query-gpu=index,name,temperature.gpu,utilization.gpu,memory.total,memory.used,memory.free,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null || echo 'nvidia-smi not available'", "r");
+        if (fp) {
+            char line[256];
+            while (fgets(line, sizeof(line), fp)) {
+                queue_output(client_idx, line, strlen(line));
+                queue_output_str(client_idx, "\r\n");
+            }
+            pclose(fp);
+        } else {
+            queue_output_str(client_idx, "Failed to query GPU\r\n");
+        }
+        
+        c->state = CS_IDLE;
+        queue_output_str(client_idx, "\r\n> ");
         
     } else if (strcmp(cmd, "peers") == 0) {
         queue_output_str(client_idx, "\r\n=== Peers ===\r\n");
