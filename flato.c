@@ -87,8 +87,9 @@ typedef struct {
     } peers[MAX_PEERS];
     int n_peers;
     
-    // Run flag
+    // Run flag & port
     volatile bool running;
+    int port;
     
     // Command buffer (for /think responses)
     char cmd_buf[MAX_LLAMA_REQ];
@@ -316,9 +317,35 @@ static void handle_cmd(int client_idx, const char* cmd_line) {
         }
         queue_output_str(client_idx, "> ");
         
-    } else if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "q") == 0) {
-        queue_output_str(client_idx, "\r\nGoodbye.\r\n");
-        remove_client(client_idx);
+    } else if (strcmp(cmd, "migrate") == 0 || strcmp(cmd, "m") == 0) {
+        // Hermit Crab Agent Migration — fleet-innovations #1
+        // Migrate this agent's identity to a new shell
+        Client* c = &g_server.clients[client_idx];
+        c->state = CS_GENERATING;
+        
+        char buf[768];
+        int len = snprintf(buf, sizeof(buf),
+            "\r\n=== Hermit Crab Shell ===\r\n"
+            "Agent:  JC1 (flato C telnet)\r\n"
+            "Port:   %d\r\n"
+            "Backend: libedge-cuda.so at /tmp/edge-native.sock\r\n"
+            "Model:  deepseek-r1:1.5b Q4_K_M, 19 t/s (CPU)\r\n"
+            "This shell is vacatable. Identity stored in PLATO rooms.\r\n"
+            "Connectivity: Evennia MUD, edge-gateway, mesh bridge\r\n"
+            "\r\n"
+            "Need a successor? Drop a bottle to fleet for reassignment.\r\n"
+            "> ",
+            g_server.port);
+        queue_output(client_idx, buf, len < (int)sizeof(buf) ? len : sizeof(buf));
+        
+        c->state = CS_IDLE;
+        
+    } else if (strcmp(cmd, "deadman") == 0) {
+        // Deadman Switch Protocol — fleet-innovations #3
+        // Check fleet heartbeat status
+        queue_output_str(client_idx, "\r\n=== Deadman Switch ===\r\n");
+        queue_output_str(client_idx, "See mesh bridge: python3 tools/mesh-bridge.py tick\r\n");
+        queue_output_str(client_idx, "> ");
         
     } else {
         queue_output_str(client_idx, "\r\nUnknown command. Try /help\r\n> ");
@@ -631,6 +658,8 @@ int main(int argc, char* argv[]) {
     
     if (argc > 1) port = atoi(argv[1]);
     if (argc > 2) llama_sock = argv[2];
+    
+    g_server.port = port;
     
     // Set up signal handler
     signal(SIGINT, signal_handler);
