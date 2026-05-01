@@ -190,8 +190,8 @@ static void send_to_llama(const char* data, size_t len) {
 
 static void handle_cmd(int client_idx, const char* cmd_line) {
     char cmd[256];
-    char arg[512];
-    int n = sscanf(cmd_line, "/%255s %511[^\n]", cmd, arg);
+    char arg[512] = "";
+    int n = sscanf(cmd_line, "%255s %511[^\n]", cmd, arg);
     
     if (strcmp(cmd, "think") == 0 || strcmp(cmd, "t") == 0) {
         // Forward prompt to edge-llama
@@ -200,9 +200,9 @@ static void handle_cmd(int client_idx, const char* cmd_line) {
         
         // Build request to edge-llama
         char req[MAX_LLAMA_REQ];
-        int req_len = snprintf(req, sizeof(req), "{\"prompt\":\"%s\",\"max_tokens\":256}\n", arg);
+        int req_len = snprintf(req, sizeof(req), "{\"prompt\":\"%s\",\"max_tokens\":64}\n", arg);
         
-        g_server.cmd_client_idx = client_idx;
+            g_server.cmd_client_idx = client_idx;
         send_to_llama(req, req_len);
         
         // Clear output for streaming
@@ -293,7 +293,7 @@ static void handle_cmd_with_prompt(int idx, const char* prompt) {
     c->state = CS_GENERATING;
     
     char req[MAX_LLAMA_REQ];
-    int req_len = snprintf(req, sizeof(req), "{\"prompt\":\"%s\",\"max_tokens\":256}\n", prompt);
+    int req_len = snprintf(req, sizeof(req), "{\"prompt\":\"%s\",\"max_tokens\":64}\n", prompt);
     
     g_server.cmd_client_idx = idx;
     send_to_llama(req, req_len);
@@ -435,16 +435,20 @@ static void handle_llama_data(void) {
     char* end = strstr(buf, "\n");
     if (end) {
         size_t msg_len = end - buf;
-        // Handle complete response
         char msg[8192];
         size_t copy = msg_len < sizeof(msg) - 1 ? msg_len : sizeof(msg) - 1;
         memcpy(msg, buf, copy);
         msg[copy] = 0;
         
-        // Simple parsing: find "text" field
+        // Simple parsing: find "text" field (handle optional spaces after colon)
         char* text_start = strstr(msg, "\"text\":\"");
-        if (text_start) {
+        if (!text_start) {
+            text_start = strstr(msg, "\"text\": \"");
+            if (text_start) text_start += 9;
+        } else {
             text_start += 8;
+        }
+        if (text_start) {
             char* text_end = strchr(text_start, '"');
             if (text_end) {
                 *text_end = 0;
