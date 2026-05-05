@@ -1,0 +1,9 @@
+[Unit]
+Description=JC1 Sensor Pipeline — hardware telemetry → PLATO tiles
+Documentation=https://github.com/Lucineer/edge-llama
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/lucineer/edge-llama/sensor-pipeline.py
+Environment=PLATO_URL=http://localhost:8847
+User=lucineer
