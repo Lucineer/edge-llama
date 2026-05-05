@@ -3,3 +3,4 @@ models/
 *.o
 *.d
 *.gguf
+__pycache__/

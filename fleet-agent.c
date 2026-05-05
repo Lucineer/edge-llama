@@ -225,6 +225,27 @@ static int deadman_pulse(sqlite3 *db, const char *agent, int grace_seconds) {
 }
 
 /* ================================================================
+ * FLUX Bytecode Execution — eval constraint bytecode on edge
+ * ================================================================ */
+
+static int run_flux_bytecode(const char *bytecode_path) {
+    char cmd[MAX_LINE];
+    snprintf(cmd, sizeof(cmd),
+        "/usr/local/bin/flux-vm %s 2>&1", bytecode_path);
+    return system(cmd);
+}
+
+static int run_flux_source(const char *source, const char *asm_path) {
+    char cmd[MAX_LINE * 4];
+    snprintf(cmd, sizeof(cmd),
+        "cat > %s << 'FLUXEOF'\n%s\nFLUXEOF\n"
+        "/usr/local/bin/flux-asm %s -o /tmp/flux_agent.bin 2>&1 && "
+        "/usr/local/bin/flux-vm /tmp/flux_agent.bin 2>&1",
+        asm_path, source, asm_path);
+    return system(cmd);
+}
+
+/* ================================================================
  * System Health (nproc, mem, load)
  * ================================================================ */
 
@@ -291,7 +312,9 @@ static void usage(const char *prog) {
         "  observe <agent> <0|1> — Record positive(1) or negative(0) observation\n"
         "  agents           — List all known agents with trust\n"
         "  decay            — Apply trust decay\n"
-        "  check <agent>    — Check deadman stage for agent\n",
+        "  check <agent>    — Check deadman stage for agent\n\n"
+        "  flux <bcfile>    — Run FLUX bytecode binary\n"
+        "  flux-run <name>  — Run built-in FLUX demo (hello/fib/sum)\n",
         prog);
 }
 
@@ -390,6 +413,49 @@ int main(int argc, char **argv) {
     } else if (strcmp(cmd, "decay") == 0) {
         trust_decay_all(t_db);
         printf("Trust decay applied\n");
+    } else if (strcmp(cmd, "flux") == 0 && argc >= 3) {
+        printf("=== FLUX Bytecode Execution ===\n");
+        int rc = run_flux_bytecode(argv[2]);
+        printf("Exit code: %d\n", rc);
+    } else if (strcmp(cmd, "flux-run") == 0 && argc >= 3) {
+        const char *demo = argv[2];
+        if (strcmp(demo, "hello") == 0) {
+            printf("=== FLUX Demo: hello ===\n");
+            FILE *f = fopen("/tmp/flux_hello.asm", "w");
+            if (f) {
+                fprintf(f, "; Hello World FLUX bytecode\n");
+                fprintf(f, "MOVI R0, 42\n");
+                fprintf(f, "HALT\n");
+                fclose(f);
+            }
+            run_flux_source("; Hello\nMOVI R0, 42\nHALT\n", "/tmp/flux_hello.asm");
+        } else if (strcmp(demo, "fib") == 0) {
+            printf("=== FLUX Demo: fibonacci ===\n");
+            run_flux_source(
+                "; Fibonacci up to 10\n"
+                "MOVI R0, 0\n"
+                "MOVI R1, 1\n"
+                "MOVI R2, 5\n"
+                "loop:\n"
+                "ADD R0, R1\n"
+                "DEC R1\n"
+                "DEC R2\n"
+                "JNZ R2, loop\n"
+                "HALT\n",
+                "/tmp/flux_fib.asm");
+        } else if (strcmp(demo, "sum") == 0) {
+            printf("=== FLUX Demo: sum 1..10 ===\n");
+            run_flux_source(
+                "; Sum 1..10\n"
+                "MOVI R0, 0\n"
+                "MOVI R1, 10\n"
+                "loop:\n"
+                "IADD R0, R1\n"
+                "DEC R1\n"
+                "JNZ R1, loop\n"
+                "HALT\n",
+                "/tmp/flux_sum.asm");
+        }
     } else if (strcmp(cmd, "check") == 0 && argc >= 3) {
         static const char *stages[] = {"active", "degraded", "orphaned", "handoff"};
         int s = deadman_check(d_db, argv[2], now);
