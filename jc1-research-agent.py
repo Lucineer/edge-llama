@@ -240,11 +240,12 @@ def research_tick():
     tiles = collect_hardware_tiles()
     for q, a in tiles:
         result = submit_tile(q, a, domain="edge", agent="jc1-telemetry")
+        status = result.get("status","?")
         print(f"  {q[:40]}: {result.get('status','?')}")
     
     # 2. Check fleet repo activity
     print("Phase 2: Fleet repo monitoring")
-    changes = [f"{r.split('/')[1]} — {c}" for r, c in MONITORED_REPOS[:5]]  # simplified
+    changes = [f"{r.split('/')[1]} — active" for r in MONITORED_REPOS[:5]]  # simplified
     recent = check_fleet_activity()
     for r in recent[:5]:
         print(f"  {r[:70]}")
