@@ -1,0 +1,17 @@
+[Unit]
+Description=plato-server — PLATO Knowledge System for JC1 Edge
+Documentation=https://github.com/SuperInstance/plato-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /tmp/plato-server/server.py
+Environment=PLATO_PORT=8847
+Environment=PLATO_DATA=/tmp/plato-data
+Restart=on-failure
+RestartSec=5
+WorkingDirectory=/tmp/plato-server
+
+[Install]
+WantedBy=default.target
