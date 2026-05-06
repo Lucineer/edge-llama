@@ -24,6 +24,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <stdint.h>
 #include <sqlite3.h>
 
 /* Config */
@@ -154,8 +155,205 @@ static int trust_decay_all(sqlite3 *db) {
 }
 
 /* ================================================================
- * Deadman Switch Protocol
+ * P48 Agent Identity Vectors
+ *
+ * Each fleet agent has a 90-dim P48 signature (6-bit components, 0-63)
+ * encoding its keyword affinity. Packed into ceil(90/8)=12 uint64s.
+ *
+ * Keyword ordering (90 total, 4 groups):
+ *   EDGE(26):   jetson,cpu,gpu,memory,temperature,load,uptime,
+ *               disk,thermal,fan,power,nvidia,cuda,nvcc,
+ *               arm64,aarch64,swap,network,interface,sensor,
+ *               telemetry,hardware,clock,throttle,edge,device
+ *   RESEARCH(25): research,paper,study,findings,analysis,experiment,
+ *                benchmark,performance,test,comparison,evaluation,
+ *                learn,training,dataset,model,inference,llm,
+ *                neural,embedding,vector,similarity,tile,
+ *                investigation,methodology,result
+ *   FLEET(25):  fleet,agent,oracle,forge,vessel,bottle,matrix,
+ *               heartbeat,sync,mesh,iron,coordination,bridge,
+ *               pki,cert,trust,deadman,migration,protocol,
+ *               lighthouse,beacon,dm,conduit,message
+ *   JC1(14):    jc1,jetsonclaw,plato,evennia,flato,mythos,
+ *               cocapn,sovereign,infer,think,vessel,libllama,
+ *               gguf
+ *
+ * Signature generation for each agent:
+ *   1. Start with zero vector
+ *   2. For matching keywords in agent's domain, add 1.0 + log(1+count)
+ *   3. L2 normalize [0..63 range]
  * ================================================================ */
+
+#define P48_DIMS 90
+#define P48_PACKED 12  /* ceil(90/8) */
+
+typedef struct {
+    char name[64];
+    uint64_t packed[P48_PACKED];  /* 12 × 6-bit components */
+    int components[P48_DIMS];     /* unpacked for distance calc */
+} P48Identity;
+
+/* Pack 90 components (0-63) into 12 uint64s */
+static void p48_pack(const int comps[P48_DIMS], uint64_t packed[P48_PACKED]) {
+    memset(packed, 0, P48_PACKED * sizeof(uint64_t));
+    for (int i = 0; i < P48_DIMS; i++) {
+        int p = i / 8;
+        int bit = (i % 8) * 6;
+        packed[p] |= ((uint64_t)(comps[i] & 0x3F)) << bit;
+    }
+}
+
+/* Unpack 12 uint64s into 90 components */
+static void p48_unpack(const uint64_t packed[P48_PACKED], int comps[P48_DIMS]) {
+    for (int i = 0; i < P48_DIMS; i++) {
+        int p = i / 8;
+        int bit = (i % 8) * 6;
+        comps[i] = (int)((packed[p] >> bit) & 0x3F);
+    }
+}
+
+/* Squared P48 distance between two unpacked vectors */
+static int p48_dist_sq(const int a[P48_DIMS], const int b[P48_DIMS]) {
+    int total = 0;
+    for (int i = 0; i < P48_DIMS; i++) {
+        int d = a[i] - b[i];
+        total += d * d;
+    }
+    return total;
+}
+
+/* Packed distance (12 uint64s) — faster */
+static int p48_dist_sq_packed(const uint64_t a[P48_PACKED], const uint64_t b[P48_PACKED]) {
+    int total = 0;
+    for (int p = 0; p < P48_PACKED; p++) {
+        uint64_t ax = a[p], bx = b[p];
+        for (int i = 0; i < 8; i++) {
+            int ca = (int)((ax >> (6 * i)) & 0x3F);
+            int cb = (int)((bx >> (6 * i)) & 0x3F);
+            int d = ca - cb;
+            total += d * d;
+        }
+    }
+    return total;
+}
+
+/* Fleet agent P48 identities */
+static void agent_p48_identity(const char *agent_name, P48Identity *id) {
+    strncpy(id->name, agent_name, 63);
+    memset(id->components, 0, P48_DIMS * sizeof(int));
+    
+    if (strcmp(agent_name, "jc1") == 0 || strcmp(agent_name, "JetsonClaw1") == 0) {
+        /* Edge(26): gpu,cuda,nvidia,arm64,memory,temperature,load,edge,device,thermal,jetson */
+        id->components[0]++;  /* jetson[0] */
+        id->components[2]++;  /* gpu[2] */
+        id->components[12]++; /* cuda[12] */
+        id->components[11]++; /* nvidia[11] */
+        id->components[16]++; /* arm64[16] */
+        id->components[3]++;  /* memory[3] */
+        id->components[4]++;  /* temperature[4] */
+        id->components[5]++;  /* load[5] */
+        id->components[24]++; /* edge[24] */
+        id->components[25]++; /* device[25] */
+        id->components[7]++;  /* thermal[7] */
+        /* Research(25): llm,model,embedding,inference */
+        id->components[41]++; /* model[41] */
+        id->components[42]++; /* inference[42] */
+        id->components[38]++; /* llm[38] */
+        /* Fleet(25): fleet,agent,heartbeat,sync,deadman,trust,bottle */
+        id->components[51]++; /* fleet[51] */
+        id->components[52]++; /* agent[52] */
+        id->components[60]++; /* heartbeat[60] */
+        id->components[61]++; /* sync[61] */
+        id->components[68]++; /* deadman[68] */
+        id->components[70]++; /* trust[70] */
+        id->components[55]++; /* bottle[55] */
+        /* JC1(14): jc1,plato,evennia,flato,mythos,cocapn,sovereign,infer,think */
+        id->components[76]++; /* jc1[76] */
+        id->components[78]++; /* plato[78] */
+        id->components[79]++; /* evennia[79] */
+        id->components[80]++; /* flato[80] */
+        id->components[81]++; /* mythos[81] */
+        id->components[82]++; /* cocapn[82] */
+        id->components[84]++; /* infer[84] */
+        id->components[85]++; /* think[85] */
+    } else if (strcmp(agent_name, "oracle1") == 0 || strcmp(agent_name, "Oracle1") == 0) {
+        id->components[51]++; id->components[52]++; id->components[53]++; /* fleet,agent,oracle */
+        id->components[60]++; id->components[61]++; /* heartbeat,sync */
+        id->components[62]++; /* mesh */
+        id->components[65]++; id->components[66]++; id->components[67]++; /* pki,cert,trust */
+        id->components[70]++; /* trust */
+        id->components[72]++; id->components[75]++; /* migration,lighthouse */
+        id->components[78]++; id->components[82]++; /* plato,cocapn */
+        id->components[76]++; /* jc1 */
+    } else if (strcmp(agent_name, "forgemaster") == 0 || strcmp(agent_name, "Forgemaster") == 0 ||
+               strcmp(agent_name, "fm") == 0) {
+        id->components[51]++; id->components[52]++; /* fleet,agent */
+        id->components[56]++; /* matrix */
+        id->components[60]++; /* heartbeat */
+        id->components[72]++; /* migration */
+        id->components[74]++; /* iron */
+        id->components[54]++; /* forge */
+        id->components[55]++; /* bottle */
+    } else if (strcmp(agent_name, "kimi") == 0 || strcmp(agent_name, "KimiClaw") == 0) {
+        id->components[56]++; /* matrix */
+        id->components[74]++; /* iron */
+    }
+    
+    /* Normalize */
+    int total = 0;
+    for (int i = 0; i < P48_DIMS; i++) {
+        total += id->components[i];
+    }
+    if (total == 0) {
+        id->components[0] = 1; /* Default: at least some edge affinity */
+        total = 1;
+    }
+    
+    /* Scale into [5..63] range based on contribution */
+    for (int i = 0; i < P48_DIMS; i++) {
+        int raw = id->components[i];
+        if (raw > 0) {
+            raw = (int)(5.0 + 58.0 * (double)raw / (double)total);
+        }
+        id->components[i] = raw > 63 ? 63 : raw;
+    }
+    
+    /* Pack */
+    p48_pack(id->components, id->packed);
+}
+
+/* Print P48 identity as JSON */
+static void p48_identity_json(FILE *out, const P48Identity *id) {
+    fprintf(out, "{\n  \"agent\": \"%s\",\n  \"p48_packed\": [", id->name);
+    for (int i = 0; i < P48_PACKED; i++) {
+        fprintf(out, "%s%llu", i > 0 ? ", " : "", 
+                (unsigned long long)id->packed[i]);
+    }
+    fprintf(out, "]\n}\n");
+}
+
+/* Print P48 identity for all known fleet agents */
+static void cmd_p48_agents(void) {
+    static const char *agents[] = {"jc1", "oracle1", "forgemaster", "kimi", NULL};
+    printf("[\n");
+    for (int i = 0; agents[i]; i++) {
+        P48Identity id;
+        agent_p48_identity(agents[i], &id);
+        p48_identity_json(stdout, &id);
+        if (agents[i+1]) printf(",\n");
+    }
+    printf("]\n");
+}
+
+/* Compare agent identity to another — returns distance */
+static int cmd_p48_compare(const char *a, const char *b) {
+    P48Identity id_a, id_b;
+    agent_p48_identity(a, &id_a);
+    agent_p48_identity(b, &id_b);
+    int dist = p48_dist_sq_packed(id_a.packed, id_b.packed);
+    printf("P48 distance %s <-> %s: %d\n", a, b, dist);
+    return dist;
+}
 
 static int deadman_db_init(sqlite3 *db) {
     const char *sql =
@@ -314,7 +512,9 @@ static void usage(const char *prog) {
         "  decay            — Apply trust decay\n"
         "  check <agent>    — Check deadman stage for agent\n\n"
         "  flux <bcfile>    — Run FLUX bytecode binary\n"
-        "  flux-run <name>  — Run built-in FLUX demo (hello/fib/sum)\n",
+        "  flux-run <name>  — Run built-in FLUX demo (hello/fib/sum)\n"
+        "  p48              — Show all fleet agent P48 identities\n"
+        "  p48-compare <a> <b> — P48 distance between two agents\n",
         prog);
 }
 
@@ -456,6 +656,10 @@ int main(int argc, char **argv) {
                 "HALT\n",
                 "/tmp/flux_sum.asm");
         }
+    } else if (strcmp(cmd, "p48") == 0) {
+        cmd_p48_agents();
+    } else if (strcmp(cmd, "p48-compare") == 0 && argc >= 4) {
+        cmd_p48_compare(argv[2], argv[3]);
     } else if (strcmp(cmd, "check") == 0 && argc >= 3) {
         static const char *stages[] = {"active", "degraded", "orphaned", "handoff"};
         int s = deadman_check(d_db, argv[2], now);
