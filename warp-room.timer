@@ -1,0 +1,11 @@
+[Unit]
+Description=warp-room training timer — every 10 minutes
+Documentation=https://github.com/Lucineer/edge-llama
+
+[Timer]
+OnCalendar=*:0/10
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
