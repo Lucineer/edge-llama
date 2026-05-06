@@ -374,3 +374,13 @@ round-robin scheduler in C that cycles through 100 player slots every 10ms,
 and use the ESP32's ULP coprocessor to detect incoming WiFi packets.**
 
 That's a project for another day — but it proves the thesis.
+
+---
+
+## Repos
+
+- **old-school-machine-wisdom** (research): https://github.com/SuperInstance/old-school-machine-wisdom
+- **warp-room** (C17 implementation): https://github.com/SuperInstance/warp-room
+  - Compiles clean on ARM64 first try (gcc -std=c17 -O2)
+  - Shared memory via shm_open, NEON SIMD ready
+  - Awaiting fork to Lucineer org (permission issue — need Casey to add SuperInstance as Lucineer member)
